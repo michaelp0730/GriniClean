@@ -6,4 +6,9 @@
         <Nullable>enable</Nullable>
     </PropertyGroup>
 
+    <ItemGroup>
+      <ProjectReference Include="..\GriniClean.Core\GriniClean.Core.csproj" />
+      <ProjectReference Include="..\GriniClean.Infrastructure\GriniClean.Infrastructure.csproj" />
+    </ItemGroup>
+
 </Project>

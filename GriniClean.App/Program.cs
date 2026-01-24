@@ -1,4 +1,8 @@
-﻿using Microsoft.Extensions.DependencyInjection;
+﻿using GriniClean.Core.Models;
+using GriniClean.Infrastructure.FileSystem;
+using GriniClean.Infrastructure.OS;
+using GriniClean.Modules.Cache.Services;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -23,7 +27,14 @@ public static class Program
             b.SetMinimumLevel(LogLevel.Information);
         });
 
-        // Register commands/services later (modules will plug in here)
+        // Infrastructure
+        services.AddSingleton<IFileSystem, OsFileSystem>();
+        services.AddSingleton<IUserPaths, MacUserPaths>();
+
+        // Cache module
+        services.AddSingleton<ICacheScanner, MacCacheScanner>();
+
+        // Commands
         services.AddSingleton<CacheScanCommand>();
 
         var registrar = new TypeRegistrar(services);
@@ -31,10 +42,7 @@ public static class Program
 
         app.Configure(config =>
         {
-            // Make help text show "gc" if invoked as gc
-            var invokedAs = Path.GetFileName(Environment.GetCommandLineArgs()[0]);
-            var name = string.Equals(invokedAs, "gc", StringComparison.OrdinalIgnoreCase) ? "gc" : "gc";
-            config.SetApplicationName(name);
+            config.SetApplicationName("gc");
 
             config.AddCommand<CacheScanCommand>("cache-scan")
                 .WithDescription("Scan safe user cache locations (no system directories).");
@@ -59,21 +67,122 @@ internal sealed class TypeRegistrar(IServiceCollection builder) : ITypeRegistrar
     }
 }
 
-// Dummy command to confirm plumbing
-internal sealed class CacheScanCommand : Command<CacheScanCommand.Settings>
+internal sealed class CacheScanCommand(ICacheScanner scanner) : Command<CacheScanCommand.Settings>
 {
     public sealed class Settings : CommandSettings
     {
-        // Optional: add flags later
-        [Description("If set, does not calculate folder sizes.")]
+        [Description("If set, does not calculate folder sizes (faster).")]
         [CommandOption("--fast")]
         public bool Fast { get; init; }
+
+        [Description("Include sandbox container caches under ~/Library/Containers (advanced).")]
+        [CommandOption("--include-containers")]
+        public bool IncludeContainers { get; init; }
+
+        [Description("Print diagnostic info about scanned locations.")]
+        [CommandOption("--verbose")]
+        public bool Verbose { get; init; }
+
     }
 
     public override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
-        AnsiConsole.MarkupLine("[green]gc is running.[/]");
-        AnsiConsole.MarkupLine("Next: implement cache scanning under ~/Library/Caches");
+        var options = new CacheScanOptions(
+            Fast: settings.Fast,
+            IncludeContainers: settings.IncludeContainers
+        );
+
+        AnsiConsole.MarkupLine("[bold]Scanning caches...[/]");
+
+        IReadOnlyList<CacheTarget> targets;
+        try
+        {
+            if (settings.Verbose)
+            {
+                var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                if (string.IsNullOrWhiteSpace(home))
+                {
+                    home = Environment.GetEnvironmentVariable("HOME") ?? "";
+                }
+
+                AnsiConsole.MarkupLine($"[grey]Home:[/] {Markup.Escape(home)}");
+                AnsiConsole.MarkupLine($"[grey]Checking:[/] {Markup.Escape(
+                    Path.Combine(home, "Library", "Caches"))}");
+
+                if (settings.IncludeContainers)
+                {
+                    AnsiConsole.MarkupLine($"[grey]Checking:[/] {Markup.Escape(
+                        Path.Combine(home, "Library", "Containers"))}");
+                }
+            }
+
+            targets = scanner.Scan(options, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            AnsiConsole.MarkupLine("[yellow]Canceled.[/]");
+            return 130;
+        }
+
+        if (targets.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[yellow]No cache targets found (or access denied).[/]");
+            return 0;
+        }
+
+        var table = new Table()
+            .Border(TableBorder.Rounded)
+            .AddColumn(new TableColumn("Target").LeftAligned())
+            .AddColumn(new TableColumn("Kind").LeftAligned())
+            .AddColumn(new TableColumn("Size").RightAligned())
+            .AddColumn(new TableColumn("Path").LeftAligned());
+
+        foreach (var t in targets)
+        {
+            var kind = t.Kind switch
+            {
+                CacheTargetKind.UserCachesRootChild => "User cache",
+                CacheTargetKind.ContainerCaches => "Container cache",
+                _ => "Unknown"
+            };
+
+            if (t.IsAdvanced)
+                kind += " (adv)";
+
+            var size = t.SizeBytes.HasValue ? FormatBytes(t.SizeBytes.Value) : (settings.Fast ? "-" : "n/a");
+
+            table.AddRow(
+                EscapeMarkup(t.DisplayName),
+                EscapeMarkup(kind),
+                EscapeMarkup(size),
+                EscapeMarkup(t.Path)
+            );
+        }
+
+        AnsiConsole.Write(table);
+
+        AnsiConsole.MarkupLine($"\nFound [green]{targets.Count}[/] targets.");
+        if (!settings.IncludeContainers)
+            AnsiConsole.MarkupLine("[grey]Tip: use --include-containers to see sandbox container caches (advanced).[/]");
+
         return 0;
     }
+
+    private static string FormatBytes(long bytes)
+    {
+        // simple human readable
+        string[] units = ["B", "KB", "MB", "GB", "TB"];
+        double size = bytes;
+        int unit = 0;
+
+        while (size >= 1024 && unit < units.Length - 1)
+        {
+            size /= 1024;
+            unit++;
+        }
+
+        return unit == 0 ? $"{bytes} {units[unit]}" : $"{size:0.##} {units[unit]}";
+    }
+
+    private static string EscapeMarkup(string s) => Markup.Escape(s);
 }

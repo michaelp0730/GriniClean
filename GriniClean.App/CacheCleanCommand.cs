@@ -1,12 +1,13 @@
 using System.ComponentModel;
 using GriniClean.Core.Models;
+using GriniClean.Infrastructure.OS;
 using GriniClean.Modules.Cache.Services;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
 namespace GriniClean;
 
-internal sealed class CacheCleanCommand(ICacheScanner scanner, ICacheCleaner cleaner)
+internal sealed class CacheCleanCommand(ICacheScanner scanner, ICacheCleaner cleaner, IProcessService processes)
     : Command<CacheCleanCommand.Settings>
 {
     public sealed class Settings : CommandSettings
@@ -42,6 +43,10 @@ internal sealed class CacheCleanCommand(ICacheScanner scanner, ICacheCleaner cle
         [CommandOption("--include-apple")]
         [Description("Include Apple user caches (com.apple.*). Off by default.")]
         public bool IncludeApple { get; init; }
+
+        [Description("Allow cleaning caches even if the related app appears to be running.")]
+        [CommandOption("--allow-running")]
+        public bool AllowRunning { get; init; }
     }
 
     public override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)
@@ -108,7 +113,9 @@ internal sealed class CacheCleanCommand(ICacheScanner scanner, ICacheCleaner cle
                 $"[yellow]DRY RUN[/]: would move [green]{selected.Count}[/] targets (~{Markup.Escape(totalStr)}) to Trash."
             );
             foreach (var t in selected)
+            {
                 AnsiConsole.MarkupLine($"  [grey]-[/] {Markup.Escape(t.Path)}");
+            }
             return 0;
         }
 
@@ -118,7 +125,57 @@ internal sealed class CacheCleanCommand(ICacheScanner scanner, ICacheCleaner cle
             return 0;
         }
 
-        // 3) Execute with progress
+        // 3) Skip targets tied to running apps (unless overridden)
+        if (!settings.AllowRunning)
+        {
+            var blocked = new List<CacheTarget>();
+            var allowed = new List<CacheTarget>();
+
+            foreach (var t in selected)
+            {
+                var bundleId = TryGetBundleId(t);
+                var processName = TryGetProcessName(t);
+
+                var isRunning =
+                    (bundleId is not null && processes.IsAppRunningByBundleId(bundleId)) ||
+                    (processName is not null && processes.IsProcessRunning(processName));
+
+                if (isRunning)
+                {
+                    blocked.Add(t);
+                }
+                else
+                {
+                    allowed.Add(t);
+                }
+            }
+
+            if (blocked.Count > 0)
+            {
+                AnsiConsole.MarkupLine("[yellow]Skipped some targets because the related app appears to be running:[/]");
+                foreach (var b in blocked.Take(10))
+                {
+                    AnsiConsole.MarkupLine($"  [yellow]-[/] {Markup.Escape(b.DisplayName)} [grey]{Markup.Escape(b.Path)}[/]");
+                }
+
+                if (blocked.Count > 10)
+                {
+                    AnsiConsole.MarkupLine($"  [grey]...and {blocked.Count - 10} more[/]");
+                }
+
+                AnsiConsole.MarkupLine("[grey]Close the app and run again, or use --allow-running to override.[/]\n");
+            }
+
+            selected = allowed;
+
+            if (selected.Count == 0)
+            {
+                AnsiConsole.MarkupLine("[grey]Nothing left to clean after skipping running apps.[/]");
+                return 0;
+            }
+        }
+
+        // 4) Execute with progress
         CacheCleanResult? result = null;
         AnsiConsole.Status()
             .Spinner(Spinner.Known.Dots)
@@ -297,5 +354,31 @@ internal sealed class CacheCleanCommand(ICacheScanner scanner, ICacheCleaner cle
             if (result.FailedPaths.Count > 10)
                 AnsiConsole.MarkupLine($"  [grey]...and {result.FailedPaths.Count - 10} more[/]");
         }
+    }
+
+    private static string? TryGetBundleId(CacheTarget t)
+    {
+        // bundle ids usually look like com.vendor.App with no spaces
+        if (t.DisplayName.Contains('.') && !t.DisplayName.Contains(' '))
+            return t.DisplayName;
+
+        return null;
+    }
+
+    private static string? TryGetProcessName(CacheTarget t)
+    {
+        // Very small alias map. Expand over time.
+        return t.DisplayName switch
+        {
+            "BraveSoftware" => "Brave Browser",
+            "Firefox" => "Firefox",
+            "Google" => "Google Chrome",
+            "JetBrains" => "Rider",
+            "Mozilla" => "Firefox",
+            "Thunderbird" => "Thunderbird",
+            "VisualStudio" => "Visual Studio",
+            "VisualStudioInstaller" => "Visual Studio Installer",
+            _ => null
+        };
     }
 }

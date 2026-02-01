@@ -29,6 +29,7 @@ public static class Program
 
         // Infrastructure
         services.AddSingleton<IFileSystem, OsFileSystem>();
+        services.AddSingleton<IProcessService, MacProcessService>();
         services.AddSingleton<ITrashService, MacTrashService>();
         services.AddSingleton<IUserPaths, MacUserPaths>();
 

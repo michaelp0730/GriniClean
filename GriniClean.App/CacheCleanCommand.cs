@@ -38,6 +38,10 @@ internal sealed class CacheCleanCommand(ICacheScanner scanner, ICacheCleaner cle
         [Description("If specified, only targets whose name/path contains this text (case-insensitive).")]
         [CommandOption("--filter <TEXT>")]
         public string? Filter { get; init; }
+
+        [CommandOption("--include-apple")]
+        [Description("Include Apple user caches (com.apple.*). Off by default.")]
+        public bool IncludeApple { get; init; }
     }
 
     public override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)
@@ -50,13 +54,29 @@ internal sealed class CacheCleanCommand(ICacheScanner scanner, ICacheCleaner cle
         }
 
         var minBytes = ParseSizeOrDefault(settings.MinSize, 1024L * 1024); // 1MB default
-
         var targets = scanner.Scan(
             new CacheScanOptions(Fast: settings.Fast, IncludeContainers: settings.IncludeContainers),
             cancellationToken
         );
 
-        var filtered = ApplyFilters(targets, minBytes, settings.ShowZero, settings.Filter)
+        var filtered = targets.Where(t =>
+            {
+                var size = t.SizeBytes ?? 0;
+
+                if (!settings.IncludeApple && t.IsApple) return false;
+                if (!settings.ShowZero && size == 0) return false;
+                if (size < minBytes) return false;
+
+                if (!string.IsNullOrWhiteSpace(settings.Filter))
+                {
+                    var f = settings.Filter.Trim();
+                    if (!t.DisplayName.Contains(f, StringComparison.OrdinalIgnoreCase) &&
+                        !t.Path.Contains(f, StringComparison.OrdinalIgnoreCase))
+                        return false;
+                }
+
+                return true;
+            })
             .OrderByDescending(t => t.SizeBytes ?? -1)
             .ThenBy(t => t.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -161,14 +181,37 @@ internal sealed class CacheCleanCommand(ICacheScanner scanner, ICacheCleaner cle
             {
                 var size = t.SizeBytes.HasValue ? FormatBytes(t.SizeBytes.Value) : "-";
                 var advTag = t.IsAdvanced ? " [grey](adv)[/]" : "";
-                return $"{Markup.Escape(t.DisplayName)} [grey]{Markup.Escape(size)}[/]{advTag}";
+                var appleTag = t.IsApple ? " [yellow](Apple)[/]" : "";
+                return $"{Markup.Escape(t.DisplayName)} [grey]{Markup.Escape(size)}[/]{advTag}{appleTag}";
             });
 
         if (user.Count > 0)
-            prompt.AddChoiceGroup(new CacheTarget("User caches", "", null, CacheTargetKind.UserCachesRootChild, false), user);
+        {
+            prompt.AddChoiceGroup(
+                new CacheTarget(
+                    "User caches",
+                    string.Empty,
+                    null,
+                    CacheTargetKind.UserCachesRootChild,
+                    false,
+                    false),
+                user
+            );
+        }
 
         if (includeContainers && adv.Count > 0)
-            prompt.AddChoiceGroup(new CacheTarget("Container caches (advanced)", "", null, CacheTargetKind.ContainerCaches, true), adv);
+        {
+            prompt.AddChoiceGroup(
+                new CacheTarget(
+                    "Container caches (advanced)",
+                    string.Empty,
+                    null,
+                    CacheTargetKind.ContainerCaches,
+                    true,
+                    false),
+                adv
+            );
+        }
 
         return AnsiConsole.Prompt(prompt);
     }

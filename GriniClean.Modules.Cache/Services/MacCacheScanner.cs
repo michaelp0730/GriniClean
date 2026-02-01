@@ -31,7 +31,8 @@ public sealed class MacCacheScanner(IFileSystem fs, IUserPaths userPaths) : ICac
                 Path: userCachesRoot,
                 SizeBytes: size,
                 Kind: CacheTargetKind.UserCachesRootChild,
-                IsAdvanced: false
+                IsAdvanced: false,
+                IsApple: false
             ));
         }
 
@@ -51,13 +52,15 @@ public sealed class MacCacheScanner(IFileSystem fs, IUserPaths userPaths) : ICac
 
                     var display = Path.GetFileName(containerDir); // bundle id-like
                     long? size = options.Fast ? null : SafeSize(fs, cachesPath, cancellationToken);
+                    var isApple = IsAppleCacheName(display);
 
                     results.Add(new CacheTarget(
                         DisplayName: display,
                         Path: cachesPath,
                         SizeBytes: size,
                         Kind: CacheTargetKind.ContainerCaches,
-                        IsAdvanced: true
+                        IsAdvanced: true,
+                        IsApple: isApple
                     ));
                 }
             }
@@ -85,6 +88,7 @@ public sealed class MacCacheScanner(IFileSystem fs, IUserPaths userPaths) : ICac
             cancellationToken.ThrowIfCancellationRequested();
 
             var display = Path.GetFileName(dir);
+            var isApple = IsAppleCacheName(display);
             long? size = options.Fast ? null : SafeSize(fs, dir, cancellationToken);
 
             yield return new CacheTarget(
@@ -92,7 +96,8 @@ public sealed class MacCacheScanner(IFileSystem fs, IUserPaths userPaths) : ICac
                 Path: dir,
                 SizeBytes: size,
                 Kind: kind,
-                IsAdvanced: isAdvanced
+                IsAdvanced: isAdvanced,
+                IsApple: isApple
             );
         }
     }
@@ -107,5 +112,26 @@ public sealed class MacCacheScanner(IFileSystem fs, IUserPaths userPaths) : ICac
         {
             return null;
         }
+    }
+
+    private static bool IsAppleCacheName(string displayName)
+    {
+        if (string.IsNullOrWhiteSpace(displayName))
+            return false;
+
+        // Most Apple user caches in ~/Library/Caches are com.apple.*
+        if (displayName.StartsWith("com.apple.", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        // Some Apple-ish folders don't follow com.apple.* naming
+        // Keep this conservative to avoid false positives.
+        return displayName.Equals("Safari", StringComparison.OrdinalIgnoreCase)
+               || displayName.Equals("Spotlight", StringComparison.OrdinalIgnoreCase)
+               || displayName.Equals("SiriTTS", StringComparison.OrdinalIgnoreCase)
+               || displayName.Equals("GeoServices", StringComparison.OrdinalIgnoreCase)
+               || displayName.Equals("PassKit", StringComparison.OrdinalIgnoreCase)
+               || displayName.Equals("CloudKit", StringComparison.OrdinalIgnoreCase)
+               || displayName.Equals("Animoji", StringComparison.OrdinalIgnoreCase)
+               || displayName.Equals("GameKit", StringComparison.OrdinalIgnoreCase);
     }
 }

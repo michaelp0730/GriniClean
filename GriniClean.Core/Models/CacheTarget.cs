@@ -5,7 +5,8 @@ public sealed record CacheTarget(
     string Path,
     long? SizeBytes,
     CacheTargetKind Kind,
-    bool IsAdvanced
+    bool IsAdvanced,
+    bool IsApple
 );
 
 public enum CacheTargetKind

@@ -34,9 +34,11 @@ public static class Program
 
         // Cache module
         services.AddSingleton<ICacheScanner, MacCacheScanner>();
+        services.AddSingleton<ICacheCleaner, MacCacheCleaner>();
 
         // Commands
         services.AddSingleton<CacheScanCommand>();
+        services.AddSingleton<CacheCleanCommand>();
 
         var registrar = new TypeRegistrar(services);
         var app = new CommandApp(registrar);
@@ -47,6 +49,8 @@ public static class Program
 
             config.AddCommand<CacheScanCommand>("cache-scan")
                 .WithDescription("Scan safe user cache locations (no system directories).");
+            config.AddCommand<CacheCleanCommand>("cache-clean")
+                .WithDescription("Interactively choose cache targets and move them to Trash (Trash-first).");
         });
 
         return app.Run(args);
